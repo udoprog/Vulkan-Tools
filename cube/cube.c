@@ -423,6 +423,7 @@ struct demo {
     SwapchainImageResources *swapchain_image_resources;
     VkPresentModeKHR presentMode;
     VkFence fences[FRAME_LAG];
+    VkFence acquire_fence;
     int frame_index;
 
     VkCommandPool cmd_pool;
@@ -1075,10 +1076,12 @@ static void demo_draw(struct demo *demo) {
     vkResetFences(demo->device, 1, &demo->fences[demo->frame_index]);
 
     do {
+        printf("before: %d\n", vkGetFenceStatus(demo->device, demo->acquire_fence));
+
         // Get the index of the next available swapchain image:
         err =
             demo->fpAcquireNextImageKHR(demo->device, demo->swapchain, UINT64_MAX,
-                                        demo->image_acquired_semaphores[demo->frame_index], VK_NULL_HANDLE, &demo->current_buffer);
+                                        VK_NULL_HANDLE, demo->acquire_fence, &demo->current_buffer);
 
         if (err == VK_ERROR_OUT_OF_DATE_KHR) {
             // demo->swapchain is out of date (e.g. the window was resized) and
@@ -1093,6 +1096,9 @@ static void demo_draw(struct demo *demo) {
             demo_create_surface(demo);
             demo_resize(demo);
         } else {
+            printf("fence: %d\n", vkGetFenceStatus(demo->device, demo->acquire_fence));
+            vkWaitForFences(demo->device, 1, &demo->acquire_fence, VK_TRUE, UINT64_MAX);
+            vkResetFences(demo->device, 1, &demo->acquire_fence);
             assert(!err);
         }
     } while (err != VK_SUCCESS);
@@ -1121,8 +1127,10 @@ static void demo_draw(struct demo *demo) {
     submit_info.pNext = NULL;
     pipe_stage_flags = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     submit_info.pWaitDstStageMask = &pipe_stage_flags;
-    submit_info.waitSemaphoreCount = 1;
-    submit_info.pWaitSemaphores = &demo->image_acquired_semaphores[demo->frame_index];
+    // submit_info.waitSemaphoreCount = 1;
+    // submit_info.pWaitSemaphores = &demo->image_acquired_semaphores[demo->frame_index];
+    submit_info.waitSemaphoreCount = 0;
+    submit_info.pWaitSemaphores = NULL;
     submit_info.commandBufferCount = 1;
     submit_info.pCommandBuffers = &demo->swapchain_image_resources[demo->current_buffer].cmd;
     submit_info.signalSemaphoreCount = 1;
@@ -4067,8 +4075,13 @@ static void demo_init_vk_swapchain(struct demo *demo) {
     // ahead of the image presents
     VkFenceCreateInfo fence_ci = {
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .pNext = NULL, .flags = VK_FENCE_CREATE_SIGNALED_BIT};
+    VkFenceCreateInfo fence_unsignaled_ci = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .pNext = NULL, .flags = 0};
     for (uint32_t i = 0; i < FRAME_LAG; i++) {
         err = vkCreateFence(demo->device, &fence_ci, NULL, &demo->fences[i]);
+        assert(!err);
+
+        err = vkCreateFence(demo->device, &fence_unsignaled_ci, NULL, &demo->acquire_fence);
         assert(!err);
 
         err = vkCreateSemaphore(demo->device, &semaphoreCreateInfo, NULL, &demo->image_acquired_semaphores[i]);
